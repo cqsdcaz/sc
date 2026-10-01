@@ -52,7 +52,7 @@ local config = {
 
 local soundOptions = {
     ["Chime"] = "rbxassetid://4590657391",
-    ["Bell"] = "rbxassetid://515335955",
+    ["Bell"] = "rbxassetid://129496339606661",
     ["Beep"] = "rbxassetid://232127900"
 }
 
