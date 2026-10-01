@@ -81,7 +81,7 @@ local targetFruitNames = {
     "Creation Fruit", "Spider Fruit", "Sound Fruit", "Phoenix Fruit", "Portal Fruit",
     "Pain Fruit", "Rumble Fruit", "Blizzard Fruit", "Gravity Fruit", "Mammoth Fruit",
     "T-Rex Fruit", "Dough Fruit", "Shadow Fruit", "Venom Fruit", "Control Fruit",
-    "Gas Fruit", "Spirit Fruit", "Leopard Fruit", "Yeti Fruit", "Kitsune Fruit",
+    "Gas Fruit", "Spirit Fruit", "Leopard Fruit", "Yeti Fruit","Eagle Fruit", "Kitsune Fruit",
     "Dragon Fruit"
 }
 
