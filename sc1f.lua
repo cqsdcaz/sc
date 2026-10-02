@@ -81,7 +81,7 @@ local targetFruitNames = {
     "Creation Fruit", "Spider Fruit", "Sound Fruit", "Phoenix Fruit", "Portal Fruit",
     "Pain Fruit", "Rumble Fruit", "Blizzard Fruit", "Gravity Fruit", "Mammoth Fruit",
     "T-Rex Fruit", "Dough Fruit", "Shadow Fruit", "Venom Fruit", "Control Fruit",
-    "Gas Fruit", "Spirit Fruit", "Leopard Fruit", "Yeti Fruit","Eagle Fruit", "Kitsune Fruit",
+    "Gas Fruit", "Spirit Fruit", "Leopard Fruit", "Yeti Fruit", "Kitsune Fruit",
     "Dragon Fruit"
 }
 
@@ -920,3 +920,427 @@ end)
 
 updateFruitList()
 print("Ultimate Hub Fully Loaded!")
+
+-- ============================================
+-- SECTION 4: PLAYER LIST (Auto-Refresh / Spectate / Fly To)
+-- ============================================
+local playersHeader = Instance.new("TextLabel")
+playersHeader.Size = UDim2.new(0.9, 0, 0, 25)
+playersHeader.Position = UDim2.new(0.05, 0, 0, 885)
+playersHeader.BackgroundTransparency = 1
+playersHeader.Text = "--- Player List (Auto-Refresh) ---"
+playersHeader.TextColor3 = Color3.fromRGB(255, 150, 200)
+playersHeader.TextScaled = true
+playersHeader.Font = Enum.Font.GothamBold
+playersHeader.Parent = mainFrame
+
+local spectateStatusLabel = Instance.new("TextLabel")
+spectateStatusLabel.Size = UDim2.new(0.9, 0, 0, 20)
+spectateStatusLabel.Position = UDim2.new(0.05, 0, 0, 911)
+spectateStatusLabel.BackgroundTransparency = 1
+spectateStatusLabel.Text = "Spectating: None"
+spectateStatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+spectateStatusLabel.TextScaled = true
+spectateStatusLabel.Font = Enum.Font.Gotham
+spectateStatusLabel.Parent = mainFrame
+
+local playerListFrame = Instance.new("Frame")
+playerListFrame.Size = UDim2.new(0.9, 0, 0, 200)
+playerListFrame.Position = UDim2.new(0.05, 0, 0, 968)
+playerListFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+playerListFrame.BackgroundTransparency = 0.5
+playerListFrame.BorderSizePixel = 1
+playerListFrame.Parent = mainFrame
+
+local playerList = Instance.new("ScrollingFrame")
+playerList.Size = UDim2.new(1, -10, 1, -10)
+playerList.Position = UDim2.new(0, 5, 0, 5)
+playerList.BackgroundTransparency = 1
+playerList.ScrollBarThickness = 6
+playerList.CanvasSize = UDim2.new(0, 0, 0, 0)
+playerList.Parent = playerListFrame
+
+local noPlayersLbl = Instance.new("TextLabel")
+noPlayersLbl.Size = UDim2.new(1, 0, 0, 30)
+noPlayersLbl.BackgroundTransparency = 1
+noPlayersLbl.Text = "❌ No other players in server"
+noPlayersLbl.TextColor3 = Color3.fromRGB(255, 100, 100)
+noPlayersLbl.TextScaled = true
+noPlayersLbl.Font = Enum.Font.Gotham
+noPlayersLbl.Visible = false
+noPlayersLbl.Parent = playerList
+
+-- State
+local playerRows = {}
+local playerListAutoRefresh = true
+local spectatingPlayer = nil
+local spectateConn = nil
+local flyTargetPlayer = nil
+local flyConn = nil
+
+-- Noclip state
+local noclipSaved = {}
+
+-- Spectate camera state
+local spectateDistance = 15
+local spectateYaw = 0
+local spectatePitch = -15
+local savedMouseBehavior = nil
+local savedMouseIcon = nil
+local lastMousePos = nil
+
+-- ---- SCROLL WHEEL ZOOM (only while spectating) ----
+userInputService.InputChanged:Connect(function(input)
+    if not spectatingPlayer then return end
+    if input.UserInputType == Enum.UserInputType.MouseWheel then
+        spectateDistance = math.clamp(spectateDistance - input.Position.Z * 3, 3, 250)
+    end
+end)
+
+-- ---------- SPECTATE ----------
+local function stopSpectate()
+    if spectateConn then spectateConn:Disconnect(); spectateConn = nil end
+    spectatingPlayer = nil
+    lastMousePos = nil
+
+    local cam = workspace.CurrentCamera
+    if cam then
+        cam.CameraType = Enum.CameraType.Custom
+        if humanoid then cam.CameraSubject = humanoid end
+    end
+
+    if savedMouseBehavior then
+        userInputService.MouseBehavior = savedMouseBehavior
+        savedMouseBehavior = nil
+    end
+    if savedMouseIcon ~= nil then
+        userInputService.MouseIconEnabled = savedMouseIcon
+        savedMouseIcon = nil
+    end
+
+    spectateStatusLabel.Text = "Spectating: None"
+    for _, row in pairs(playerRows) do
+        row.spectateBtn.Text = "👁 Spectate"
+        row.spectateBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 90)
+    end
+end
+
+local function startSpectate(target)
+    if not target or target == player then return end
+    stopSpectate()
+
+    spectatingPlayer = target
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+
+    savedMouseBehavior = userInputService.MouseBehavior
+    savedMouseIcon = userInputService.MouseIconEnabled
+
+    spectateYaw = 0
+    spectatePitch = -15
+    spectateDistance = 15
+    lastMousePos = nil
+
+    cam.CameraType = Enum.CameraType.Scriptable
+    spectateStatusLabel.Text = "Spectating: " .. target.Name .. " | Zoom: 15"
+
+    local row = playerRows[target]
+    if row then
+        row.spectateBtn.Text = "⏹ Stop"
+        row.spectateBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    end
+
+    spectateConn = runService.RenderStepped:Connect(function()
+        if not spectatingPlayer then return end
+
+        userInputService.MouseBehavior = Enum.MouseBehavior.Default
+        userInputService.MouseIconEnabled = true
+
+        -- Right-click drag look using absolute mouse deltas
+        if userInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+            local pos = userInputService:GetMouseLocation()
+            if lastMousePos then
+                local dx = pos.X - lastMousePos.X
+                local dy = pos.Y - lastMousePos.Y
+                spectateYaw = spectateYaw - dx * 0.4
+                spectatePitch = math.clamp(spectatePitch - dy * 0.4, -85, 85)
+            end
+            lastMousePos = pos
+        else
+            lastMousePos = nil
+        end
+
+        local tChar = spectatingPlayer.Character
+        if not tChar then stopSpectate() return end
+        local head = tChar:FindFirstChild("Head") or tChar:FindFirstChild("HumanoidRootPart")
+        if not head then return end
+
+        spectateStatusLabel.Text = string.format("Spectating: %s | Zoom: %.0f", spectatingPlayer.Name, spectateDistance)
+
+        local yaw = math.rad(spectateYaw)
+        local pitch = math.rad(spectatePitch)
+        local dir = Vector3.new(
+            math.sin(yaw) * math.cos(pitch),
+            math.sin(pitch),
+            math.cos(yaw) * math.cos(pitch)
+        )
+        local targetPos = head.Position
+        cam.CFrame = CFrame.new(targetPos + dir * spectateDistance, targetPos)
+    end)
+end
+
+-- ---------- NOCLIP HELPER ----------
+local function setCharacterNoclip(char, enabled)
+    if not char then return end
+    if enabled then
+        noclipSaved = {}
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                noclipSaved[part] = part.CanCollide
+                part.CanCollide = false
+            end
+        end
+    else
+        for part, original in pairs(noclipSaved) do
+            if part and part.Parent then
+                part.CanCollide = original
+            end
+        end
+        noclipSaved = {}
+    end
+end
+
+-- ---------- FLY TO PLAYER (Noclip, normal gravity) ----------
+local function stopFly()
+    if flyConn then flyConn:Disconnect(); flyConn = nil end
+
+    local myChar = player.Character
+    if myChar then setCharacterNoclip(myChar, false) end
+
+    flyTargetPlayer = nil
+end
+
+local function flyToPlayer(target)
+    if not target or target == player then return end
+    stopFly()
+
+    local myChar = player.Character
+    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myChar or not myHrp then return end
+
+    flyTargetPlayer = target
+    statusLabel.Text = "Status: Flying to " .. target.Name
+
+    -- Noclip through walls
+    setCharacterNoclip(myChar, true)
+
+    flyConn = runService.RenderStepped:Connect(function(dt)
+        local tChar = flyTargetPlayer and flyTargetPlayer.Character
+        local tHrp = tChar and tChar:FindFirstChild("HumanoidRootPart")
+
+        if not myHrp or not myHrp.Parent or not tHrp then
+            stopFly()
+            return
+        end
+
+        local dest = tHrp.Position + Vector3.new(0, 3, 0)
+        local diff = dest - myHrp.Position
+        local dist = diff.Magnitude
+
+        if dist <= 5 then
+            statusLabel.Text = "Status: Arrived at " .. flyTargetPlayer.Name
+            stopFly()
+            return
+        end
+
+        local step = math.min(250 * dt, dist)
+        myHrp.CFrame = CFrame.new(myHrp.Position + diff.Unit * step)
+    end)
+end
+
+-- ---------- ROW CREATION ----------
+local function createPlayerRow(p)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -10, 0, 32)
+    row.Position = UDim2.new(0, 5, 0, 0)
+    row.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    row.BorderSizePixel = 0
+    row.Parent = playerList
+
+    local rowCorner = Instance.new("UICorner")
+    rowCorner.CornerRadius = UDim.new(0, 6)
+    rowCorner.Parent = row
+
+    local nameLbl = Instance.new("TextLabel")
+    nameLbl.Size = UDim2.new(0.42, -4, 1, 0)
+    nameLbl.Position = UDim2.new(0, 6, 0, 0)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Text = p.Name
+    nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nameLbl.TextScaled = true
+    nameLbl.Font = Enum.Font.Gotham
+    nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+    nameLbl.Parent = row
+
+    local specBtn = Instance.new("TextButton")
+    specBtn.Size = UDim2.new(0.27, 0, 0, 24)
+    specBtn.Position = UDim2.new(0.43, 0, 0, 4)
+    specBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 90)
+    specBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    specBtn.Text = "👁 Spectate"
+    specBtn.TextScaled = true
+    specBtn.Font = Enum.Font.GothamBold
+    specBtn.Parent = row
+
+    local flyBtn = Instance.new("TextButton")
+    flyBtn.Size = UDim2.new(0.27, 0, 0, 24)
+    flyBtn.Position = UDim2.new(0.71, 0, 0, 4)
+    flyBtn.BackgroundColor3 = Color3.fromRGB(40, 110, 200)
+    flyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    flyBtn.Text = "✈ Fly To"
+    flyBtn.TextScaled = true
+    flyBtn.Font = Enum.Font.GothamBold
+    flyBtn.Parent = row
+
+    specBtn.MouseButton1Click:Connect(function()
+        if spectatingPlayer == p then
+            stopSpectate()
+        else
+            startSpectate(p)
+        end
+    end)
+
+    flyBtn.MouseButton1Click:Connect(function()
+        flyToPlayer(p)
+    end)
+
+    playerRows[p] = {frame = row, nameLbl = nameLbl, spectateBtn = specBtn, flyBtn = flyBtn}
+end
+
+-- ---------- LIST UPDATE ----------
+local function updatePlayerList()
+    local order = {}
+
+    for _, p in ipairs(playersService:GetPlayers()) do
+        if p ~= player then
+            table.insert(order, p)
+            if not playerRows[p] then
+                createPlayerRow(p)
+            end
+        end
+    end
+
+    for p, row in pairs(playerRows) do
+        local stillHere = false
+        for _, q in ipairs(order) do
+            if q == p then stillHere = true break end
+        end
+        if not stillHere then
+            row.frame:Destroy()
+            playerRows[p] = nil
+        end
+    end
+
+    if spectatingPlayer and not playerRows[spectatingPlayer] then
+        stopSpectate()
+    end
+
+    local y = 0
+    for _, p in ipairs(order) do
+        local row = playerRows[p]
+        if row then
+            row.frame.Position = UDim2.new(0, 5, 0, y)
+
+            local distText = ""
+            local tHrp = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+            if rootPart and tHrp then
+                distText = string.format(" [%.0fm]", (tHrp.Position - rootPart.Position).Magnitude)
+            end
+            row.nameLbl.Text = p.Name .. distText
+
+            if spectatingPlayer == p then
+                row.spectateBtn.Text = "⏹ Stop"
+                row.spectateBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+            else
+                row.spectateBtn.Text = "👁 Spectate"
+                row.spectateBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 90)
+            end
+        end
+        y = y + 36
+    end
+
+    noPlayersLbl.Visible = (#order == 0)
+    playerList.CanvasSize = UDim2.new(0, 0, 0, math.max(y + 6, 36))
+end
+
+-- ---------- CONTROL BUTTONS ----------
+local refreshPlayersBtn = Instance.new("TextButton")
+refreshPlayersBtn.Size = UDim2.new(0.22, 0, 0, 26)
+refreshPlayersBtn.Position = UDim2.new(0.05, 0, 0, 936)
+refreshPlayersBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+refreshPlayersBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+refreshPlayersBtn.Text = "🔄 Refresh"
+refreshPlayersBtn.TextScaled = true
+refreshPlayersBtn.Font = Enum.Font.GothamBold
+refreshPlayersBtn.Parent = mainFrame
+refreshPlayersBtn.MouseButton1Click:Connect(updatePlayerList)
+
+local stopSpectateBtn = Instance.new("TextButton")
+stopSpectateBtn.Size = UDim2.new(0.22, 0, 0, 26)
+stopSpectateBtn.Position = UDim2.new(0.28, 0, 0, 936)
+stopSpectateBtn.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+stopSpectateBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+stopSpectateBtn.Text = "⏹ Stop Spec"
+stopSpectateBtn.TextScaled = true
+stopSpectateBtn.Font = Enum.Font.GothamBold
+stopSpectateBtn.Parent = mainFrame
+stopSpectateBtn.MouseButton1Click:Connect(stopSpectate)
+
+local stopFlyBtn = Instance.new("TextButton")
+stopFlyBtn.Size = UDim2.new(0.22, 0, 0, 26)
+stopFlyBtn.Position = UDim2.new(0.51, 0, 0, 936)
+stopFlyBtn.BackgroundColor3 = Color3.fromRGB(180, 100, 0)
+stopFlyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+stopFlyBtn.Text = "✈ Stop Fly"
+stopFlyBtn.TextScaled = true
+stopFlyBtn.Font = Enum.Font.GothamBold
+stopFlyBtn.Parent = mainFrame
+stopFlyBtn.MouseButton1Click:Connect(function()
+    stopFly()
+    statusLabel.Text = "Status: Fly stopped"
+end)
+
+local playerAutoBtn = Instance.new("TextButton")
+playerAutoBtn.Size = UDim2.new(0.22, 0, 0, 26)
+playerAutoBtn.Position = UDim2.new(0.74, 0, 0, 936)
+playerAutoBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+playerAutoBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+playerAutoBtn.Text = "⏱ AUTO: ON"
+playerAutoBtn.TextScaled = true
+playerAutoBtn.Font = Enum.Font.GothamBold
+playerAutoBtn.Parent = mainFrame
+playerAutoBtn.MouseButton1Click:Connect(function()
+    playerListAutoRefresh = not playerListAutoRefresh
+    playerAutoBtn.Text = playerListAutoRefresh and "⏱ AUTO: ON" or "⏱ AUTO: OFF"
+    playerAutoBtn.BackgroundColor3 = playerListAutoRefresh and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(90, 90, 90)
+end)
+
+-- ---------- BACKGROUND REFRESH LOOP ----------
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if playerListAutoRefresh then
+            updatePlayerList()
+        end
+    end
+end)
+
+-- Safety: if we respawn while spectating, keep camera scriptable
+player.CharacterAdded:Connect(function()
+    if spectatingPlayer then
+        local cam = workspace.CurrentCamera
+        if cam then cam.CameraType = Enum.CameraType.Scriptable end
+    end
+end)
+
+updatePlayerList()
